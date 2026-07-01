@@ -1,0 +1,20 @@
+{
+  "tache_1": {
+    "consigne_sujet": " Vous êtes nouveaux dans une université. Décrivez à vos amis comment cela se passe avec (les prof, autres étudiants, les activités et autres). . (80-120 mots)",
+    "texte_candidat": "Bonjour les amis , j’espère que vous allez bien ! \n\nDieu à fait grâce, j’ai été admise à l’Institut Universitaire Sainte Thérèse de Yaoundé en filière banque et finance il y’a de cela quelques temps. \n\nEn effet , c’est une université vraiment de qualité car les professeurs sont sympa et ils dispensent tellement bien les cours . Les étudiants sont tellement sociables et très accueillant. Il existe également plusieurs activités à savoir un stade de basket ball et de football, une chapelle pour prier à tout moment . Nous avons également une grande cantine avec des menus très variés. \n\nJe vous suggère de venir à l’INUCASTY pour une formation de qualité. \n\nJe vous remercie pour votre écoute . \n\nOcéane",
+    "documents_contexte": []
+  },
+  "tache_2": {
+    "consigne_sujet": "Vous avez décidé de ne plus utiliser les réseaux sociaux ( twitter Instagram Facebook et autres). Écrivez un message à vos amis en citant les raisons derrière cette décision. (120-150 mots) ",
+    "texte_candidat": "Bonjour les amis j’espère que vous vous portez super bien ! \nC’est avec plaisir que je vous écris ce jour pour vous donner les raisons pour lesquelles j’ai décidé de ne plus utiliser les réseaux sociaux. \nEn effet , il y’a de cela quelques temps je me suis rendu compte sur mon manque à gagner vis-à-vis des réseaux. Outre le fait qu’ils permettent de nous distraire et nous épanouir et de causer avec nos proches , ils occasionnent également beaucoup d’exigences. De plus en plus la connexion internet devient tellement coûteux et le réseau est merdique . C’est la raison pour laquelle j’ai décidé de stopper cela . \n Je vous remercie pour votre écoute et j’espère que j’ai été à la hauteur de vos attentes. \n Cordialement \n\nOcéane",
+    "documents_contexte": []
+  },
+  "tache_3": {
+    "consigne_sujet": " Les photos sur le CV, pour ou contre?",
+    "texte_candidat": "La place de la photo sur un CV. \nDe nos jours , la place qu’occuppe la photo sur un CV fait un débat . Certains pensent que la photo sur CV est inutile car ils crée des discriminations. Les employeurs devraient juste s’attarder sur les compétences et expérience professionnelle. D’autres, en revanche, soulignent qu’elle devrait être professionnelle et dépendre du métier choisi . \n De mon point de vue ,la place qu’occupe la photo sur un CV n’est pas nécessaire. L’idéal devrait reposer sur les diplômes et compétences mise en jeu . Par exemple, elle peut créer des inégalités entre les candidats. \n Cependant on peut l’admettre pour des métiers spécifiques tels que une chargée clientèle, un agent marketing et commercial. \nEn conclusion, la photo sur CV n’est pas nécessaire , mais peut être prise en compte pour un métier spécifique.",
+    "documents_contexte": [
+      "Document 1 : On parle de l inutilité de la photo sur le cv tant que ce qui est important sont les diplômes requis et l expérience professionnelle. Les employeurs n aiment pas avoir des photos, une étude montre que c'est une perte de temps. La photo sur un cv ne doit pas etre obligatoire car elle peut influencer les employeurs, certains employeurs peuvent choisir un candidat en se basant sur sa couleur (une sorte de discrimination).",
+      "Document 2 : Christophe adhère à l idée que la présence d'une photo sur le CV ne sera pas un critère de sélection mais elle est indispensable pour quelques métiers tel que une hôtesse d'accueil, la photo est nécessaire, il donne une idée sur le candidat et certaines employeurs veulent voir la photo pour décider pour ou contre un candidat."
+    ]
+  }
+}
