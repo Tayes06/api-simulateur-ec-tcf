@@ -4,6 +4,13 @@ import asyncio
 from datetime import datetime, timezone
 from mistralai.client import Mistral
 
+
+def _compter_mots(texte: str) -> int:
+    if not texte:
+        return 0
+    return len(texte.split())
+
+
 class LLMService:
     def __init__(self):
         # Utilisation du client asynchrone pour les performances
@@ -18,24 +25,34 @@ class LLMService:
         
         if num_tache == 1:
             instructions_tache = """
-                CRITÈRES SPÉCIFIQUES - TÂCHE 1 (Récit / Description) :
-                - Longueur attendue : 60 à 120 mots. Si la copie fait moins de 60 mots, pénalise sévèrement le critère 'respect_methodologie'.
+                CRITÈRES SPÉCIFIQUES - TÂCHE 1 (Récit / Description / Message / Courriel / Lettre amicale / Invitation) :
+                - Longueur attendue : STRICTEMENT entre 60 et 120 mots maximum. Le non respect de ce critère pénalise sévèrement le critère 'respect_methodologie'.
+                - RÈGLE ABSOLUE POUR LA VERSION MODÈLE : La 'version_modele_c1' ne doit JAMAIS dépasser 120 mots. Vise idéalement une cible de 100 mots.
                 - Format obligatoire : Lettre, message ou courriel amical/familier.
                 - Éléments requis : Une salutation initiale amicale (ex: 'Chers amis,', 'Bonjour Paul,'), une formule de prise de congé ou conclusion chaleureuse, et une signature (un prénom).
-                - Contenu : Le candidat doit décrire une situation, raconter un événement ou inviter ses proches en donnant des détails concrets (lieux, data, impressions).
+                - Contenu : Le candidat doit décrire une situation, raconter un événement ou inviter ses proches en donnant des détails concrets (lieux, date, impressions).
                 """
         elif num_tache == 2:
             instructions_tache = """
                 CRITÈRES SPÉCIFIQUES - TÂCHE 2 (Article / Lettre formelle) :
-                - Longueur attendue : 120 à 150 mots. Si en dehors des clous, pénalise le 'respect_methodologie'.
+                - Longueur attendue : STRICTEMENT entre 120 et 150 mots. Le non respect de ce critère pénalise sévèrement le critère 'respect_methodologie'.
+                - RÈGLE ABSOLUE POUR LA VERSION MODÈLE : La 'version_modele_c1' ne doit JAMAIS faire moins de 120 mots ni plus de 150 mots. Vise idéalement une cible serrée de 135 mots.
                 - Format obligatoire : Article de journal, contribution à un blog ou lettre formelle / témoignage destiné à un public large.
-                - Éléments requis : Structure claire avec des paragraphes bien distincts. Titre, Introduction du sujet, développement des arguments, conclusion textuelle, recommandation et signature (prenom).
-                - Contenu : Rendre compte d'une expérience et exprimer des arguments clairs pour justifier une décision (ex: raisons de l'arrêt des réseaux sociaux). Présence obligatoire de connecteurs de cause, conséquence ou opposition (En effet, Par conséquent, Cependant, etc.).
+                - Éléments requis : Structure claire avec des paragraphes bien distincts. Titre, Introduction du sujet, développement des arguments, conclusion textuelle, recommandation et signature (prénom).
+                - Contenu : Rendre compte d'une expérience et exprimer des arguments clairs pour justifier une décision. Présence obligatoire de connecteurs de cause, conséquence ou opposition (En effet, Par conséquent, Cependant, etc.).
                 """
         elif num_tache == 3:
             instructions_tache = """
-                CRITÈRES SPÉCIFIQUES - TÂCHE 3 (Synthèse et Argumentation) :
-                - Longueur attendue : 120 à 180 mots. Si < 120 mots ou > 180 mots, la notation doit être très sévère.
+                CRITÈRES SPÉCIFIQUES - TÂCHE 3 (Synthèse, avis et Argumentation) :
+                - Longueur attendue : STRICTEMENT entre 120 et 180 mots. Le non respect de ce critère pénalise sévèrement le critère 'respect_methodologie'.
+                - RÈGLE DE COUPE STRATÉGIQUE : La 'version_modele_c1' doit être un modèle de concision absolue. Elle ne doit JAMAIS, SOUS AUCUN PRÉTEXTE, atteindre ou dépasser 180 mots. Calibre ta rédaction pour viser STRICTEMENT entre 140 et 165 mots (limite psychologique haute fixée à 170 mots). Tout dépassement détruit la note méthodologique.
+                    Pour garantir la concision, ta 'version_modele_c1' doit être scindée comme suit :
+                  * Un titre court (maximum 9 mots).
+                  * Résumé neutre et confrontation des points de vue (CIBLE : 40 à 55 mots maximum).
+                  * Ton avis personnel argumenté et illustré (CIBLE : 60 à 90 mots maximum).
+                  * Conclusion (Réaffirmer sa position, Résumer de manière synthétique ses arguments, Faire une nuance ou une recommandation). (CIBLE : 20 à 30 mots maximum).
+                - L'assemblage total de ces trois blocs ne doit SOUS AUCUN PRÉTEXTE dépasser 160-170 mots. Tout texte long sera rejeté.
+                - RÈGLE ABSOLUE POUR LA VERSION MODÈLE : 
                 - Format obligatoire : Un titre, un texte argumentatif en deux parties distinctes et équilibrées.
                 - Partie 1 (Confrontation) : Le candidat doit impérativement résumer et confronter les points de vue des documents fournis (ou du sujet) de manière NEUTRE, sans donner son avis personnel immédiatement. Utilisation de structures de comparaison (D'une part / d'autre part, Tandis que, En revanche).
                 - Partie 2 (Opinion personnelle) : Le candidat donne son avis propre sur le débat, étayé par un ou deux arguments solides et un exemple.
@@ -70,8 +87,11 @@ class LLMService:
             "erreurs": [
                 {"id": 1, "gravite": "Moyenne", "type": "Grammaire", "segment_original": "", "correction": "", "explication": "", "regle": "", "exemple": ""}
             ],
-            "versions": {"version_corrigee": "", "version_modele_c1": ""},
-            "coaching": {"points_forts": [], "points_a_ameliorer": [], "conseils": [], "objectif_prochaine_copie": ""}
+            "versions": {
+                "version_corrigee": "Texte du candidat nettoyé des fautes orthographiques et grammaticales, en conservant ses structures.", 
+                "version_modele_c1": "RÉDACTION EXEMPLE C1/C2 TRÈS CONCISE. RÈGLE CRITIQUE : Tu dois impérativement t'arrêter entre 140 et 160 mots maximum pour la Tâche 3. INTERDICTION de faire de longues phrases. Un texte de 181 mots ou plus obtiendra une note de 0 en méthodologie. Compte tes mots au fur et à mesure."
+            },
+            "coaching": {"points_forts": [], "points_a_ameliorer": [], "conseils": [], "objective_prochaine_copie": ""}
         }
 
         # 3. Assemblage du Prompt Master
@@ -83,6 +103,8 @@ class LLMService:
             {instructions_tache}
 
             Règles méthodologiques issues de la base de connaissances (RAG) :
+            ATTENTION : La version_modele_c1 doit IMPÉRATIVEMENT respecter les limites de mots de l'épreuve du TCF. Pour la Tâche 1 : 60-120 mots. Pour la Tâche 2 : 120-150 mots. Pour la Tâche 3 : 140-160 mots.
+            Tout texte dépassant ces limites ou n'atteignant pas le minimum requis sera considéré comme méthodologiquement faux et invalide pour un exemple de référence.
             {regles}
 
             Exemples de copies de référence :
@@ -90,9 +112,14 @@ class LLMService:
 
             Consigne de rigueur pour les erreurs :
             Sois très précis sur l'extraction des erreurs. Ne liste que les vraies erreurs (orthographe, grammaire, ponctuation importante, contresens). S'il n'y a pas d'erreur, renvoie un tableau vide [].
-
+            
+            CONSIGNES DE SÉCURITÉ COMPTAGE INTERNE :
+            Avant de générer la 'version_modele_c1', effectue une pré-rédaction mentale. Si ton texte pour la Tâche 3 s'approche des 170 mots, ampute immédiatement les fioritures ou les phrases superflues. L'excellence au TCF réside dans la densité argumentative alliée au respect strict du format.
+            
             Tu dois retourner obligatoirement un objet JSON valide respectant cette structure exacte :
-            {json.dumps(structure_json_tache, ensure_ascii=False)}"""
+            {json.dumps(structure_json_tache, ensure_ascii=False)}
+            
+            Ne réponds jamais par autre chose que le JSON strictement conforme à la structure ci-dessus. Ne réponds pas par du texte libre, des explications ou des commentaires en dehors du JSON. Respecte strictement les noms de champs, la casse et l'ordre des clés."""
         
         return prompt
 
@@ -213,6 +240,14 @@ class LLMService:
             resultats[0]["niveau_estime"]["cecrl"] = vrai_cecrl
             resultats[0]["niveau_estime"]["nclc"] = vrai_nclc
             
+            # 🔍 Extraction du texte modèle imbriqué dans "versions" -> "version_modele_c1"
+            versions = resultats[0].get("versions", {})
+            texte_modele = versions.get("version_modele_c1", "")
+            
+            # 🔢 Injection des compteurs de mots
+            resultats[0]["nombre_mots_candidat"] = _compter_mots(examen_payload.tache_1.texte_candidat)
+            resultats[0]["nombre_mots_exemple"] = _compter_mots(texte_modele)
+            
             evaluations_finales.append(resultats[0])
             score_total_obtenu += resultats[0]["score"]["obtenu"]
         else:
@@ -224,6 +259,14 @@ class LLMService:
             vrai_cecrl, vrai_nclc = self._calculer_niveaux_par_tache(resultats[1]["score"]["obtenu"], 7)
             resultats[1]["niveau_estime"]["cecrl"] = vrai_cecrl
             resultats[1]["niveau_estime"]["nclc"] = vrai_nclc
+            
+            # 🔍 Extraction du texte modèle imbriqué
+            versions = resultats[1].get("versions", {})
+            texte_modele = versions.get("version_modele_c1", "")
+            
+            # 🔢 Injection des compteurs de mots
+            resultats[1]["nombre_mots_candidat"] = _compter_mots(examen_payload.tache_2.texte_candidat)
+            resultats[1]["nombre_mots_exemple"] = _compter_mots(texte_modele)
             
             evaluations_finales.append(resultats[1])
             score_total_obtenu += resultats[1]["score"]["obtenu"]
@@ -237,6 +280,14 @@ class LLMService:
             resultats[2]["niveau_estime"]["cecrl"] = vrai_cecrl
             resultats[2]["niveau_estime"]["nclc"] = vrai_nclc
             
+            # 🔍 Extraction du texte modèle imbriqué
+            versions = resultats[2].get("versions", {})
+            texte_modele = versions.get("version_modele_c1", "")
+            
+            # 🔢 Injection des compteurs de mots
+            resultats[2]["nombre_mots_candidat"] = _compter_mots(examen_payload.tache_3.texte_candidat)
+            resultats[2]["nombre_mots_exemple"] = _compter_mots(texte_modele)
+            
             evaluations_finales.append(resultats[2])
             score_total_obtenu += resultats[2]["score"]["obtenu"]
         else:
@@ -249,7 +300,7 @@ class LLMService:
         # Récupération des niveaux du tableau de l'image_9db4cb.png
         cecrl, nclc, mention = self._determiner_niveaux_tcf(note_sur_20)
 
-        # 4. Construction du contrat de sortie
+        # 4. Construction du contrat de sortie (Exactement ton bloc d'origine d'expression écrite)
         payload_sortie = {
             "status": "success",
             "meta": {
