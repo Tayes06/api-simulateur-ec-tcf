@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: api-simulateur-ec-tcf
+    runtime: docker
+    envVars:
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: TCF_API_KEY
+        sync: false

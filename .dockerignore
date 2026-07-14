@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+.pytest_cache/
+.git/
+data_pipeline/
+tests/
+.env
+.env.example
+.pytest_cache
+*.pyc
