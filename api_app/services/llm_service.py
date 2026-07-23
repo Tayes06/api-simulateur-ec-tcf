@@ -81,7 +81,7 @@ class LLMService:
                 {"id": 1, "gravite": "Moyenne", "type": "Grammaire", "segment_original": "", "correction": "", "explication": "", "regle": "", "exemple": ""}
             ],
             "versions": {
-                "version_corrigee": "Texte du candidat nettoyé des fautes.", 
+                "version_corrigee": "Texte du candidat nettoyé des fautes et respectant la marge des mots (T1: max 120 mots, T2: max 150 mots, T3: max 170 mots).", 
                 "version_modele_c2": "RÉDACTION EXEMPLE C2 EXTRÊMEMENT CONCISE (T1: max 120 mots, T2: max 150 mots, T3: max 170 mots). Sépare chaque paragraphe par un double saut de ligne \\n\\n."
             },
             "coaching": {"points_forts": [], "points_a_ameliorer": [], "conseils": [], "objective_prochaine_copie": ""}
