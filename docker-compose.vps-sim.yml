@@ -1,0 +1,14 @@
+
+
+services:
+  vps_llm_engine:
+    image: ollama/ollama:latest
+    container_name: vps_llm_simulation
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_storage:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_storage:

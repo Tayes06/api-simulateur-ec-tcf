@@ -1,6 +1,13 @@
 # Fonctionnement détaillé de l'API Simulateur TCF Canada
 
-## Flux d'exécution d'une évaluation
+L'API expose deux domaines métier :
+
+- **Expression Écrite** — `POST /api/v1/tcf/evaluation-complete` : évaluation des 3 tâches (note /20, CECRL/NCLC, coaching)
+- **Expression Orale** — `POST /api/v1/oral/generate-corrections` et `POST /api/v1/oral/regenerate-correction` : génération de fiches de correction pédagogique (Tâche 2 / Tâche 3)
+
+Les deux partagent le même service LLM (**Gemini**, SDK `google-genai`), le même service RAG (**Qdrant** + embeddings **Mistral**) et la même authentification par clé API.
+
+## Flux d'exécution d'une évaluation (Expression Écrite)
 
 ```
 Requête HTTP
@@ -23,18 +30,19 @@ Requête HTTP
 │  Orchestrateur  │    api_app/services/llm_service.py
 └────────┬────────┘
          │
-    ┌────┴────┐────┐
-    │         │    │
-    ▼         ▼    ▼
+    ┌────┴────────────────┐
+    │ Traitement          │  ← SÉQUENTIEL (les 3 tâches l'une après l'autre,
+    │ séquentiel          │     plus d'asyncio.gather)
+    ▼         ▼         ▼
 ┌────────┐┌────────┐┌────────┐
-│ Tâche 1││ Tâche 2││ Tâche 3│  ← Lancées en parallèle
-│  /4    ││  /7    ││  /9    │     avec asyncio.gather()
+│ Tâche 1││ Tâche 2││ Tâche 3│
+│  /4    ││  /7    ││  /9    │
 └───┬────┘└───┬────┘└───┬────┘
     │         │         │
     ▼         ▼         ▼
 ┌──────────────────────────┐
 │  RAGService              │  ← recuperer_contexte()
-│  api_app/services/       │     Embedding + requête Qdrant
+│  api_app/services/       │     Embedding Mistral + requête Qdrant
 │  rag_service.py          │
 └────────┬─────────────────┘
          │
@@ -43,7 +51,7 @@ Requête HTTP
 │  Qdrant Cloud            │
 │  ┌────────────────────┐  │
 │  │ tcf_methodologie   │  │  ← Top 3 règles méthodologiques
-│  │ (règles barème)    │  │
+│  │ (PDF écrit + oral) │  │
 │  ├────────────────────┤  │
 │  │ tcf_copies_dataset │  │  ← Top 2 copies similaires (même tâche)
 │  │ (copies évaluées)  │  │
@@ -52,16 +60,16 @@ Requête HTTP
          │
          ▼
 ┌──────────────────────────┐
-│  Mistral AI (LLM)        │  ← Appel à mistral-large-latest
-│  ┌──────────────────────┐│     avec prompt système + RAG
-│  │ prompt système       ││
-│  │ + instructions tâche ││
+│  Google Gemini (LLM)     │  ← Appel à gemini-3.8-flash
+│  ┌──────────────────────┐│     (SDK google-genai, T=0.0,
+│  │ prompt système       ││      sortie JSON contrainte,
+│  │ + instructions tâche ││      retry 429/503 ×3)
 │  │ + règles méthodo     ││
 │  │ + exemples RAG       ││
 │  │ + copie candidat     ││
 │  └──────────┬───────────┘│
 └─────────────┼────────────┘
-              │
+              │  (via asyncio.to_thread)
               ▼
          Résultat JSON
          (note, analyse, erreurs...)
@@ -84,23 +92,26 @@ Requête HTTP
 
 ## 1. Sécurité (api_app/core/security.py)
 
-### Authentification par clé API
+### Authentification par clé API (seul mécanisme actif)
 
-Le fichier `security.py` implémente deux mécanismes :
-
-**Clé API (endpoint d'évaluation) :**
 - Header attendu : `X-API-Key`
 - Clé configurée dans `.env` via `TCF_API_KEY`
 - Validation dans `verifier_cle_api()` :
   1. FastAPI extrait le header `X-API-Key` automatiquement via `APIKeyHeader`
   2. Comparaison avec la valeur de `TCF_API_KEY` stockée dans l'environnement
   3. Si absente ou invalide → HTTP 403 avec message "Accès refusé : Clé d'API invalide ou manquante"
-  4. Si valide → retourne `"application_react"` (identifiant du client autorisé)
+  4. Si valide → retourne `"application_react"` (identifiant du client autorisé, jamais utilisé par la suite)
 
-**JWT (login) :**
-- Endpoint `POST /api/v1/auth/token` pour obtenir un token JWT
-- Utilisateur unique simulé : `admin_tcf` / `tcf_password_2026` (hash SHA-256)
-- Le token JWT n'est pas utilisé par l'endpoint d'évaluation (qui utilise la clé API), mais peut servir pour d'autres usages frontend
+> ⚠️ Si `TCF_API_KEY` est absente de l'environnement, la comparaison retombe sur la valeur de repli `"cle_par_defaut_si_vide"` — l'endpoint devient alors accessible à quiconque envoie cette valeur.
+
+### Authentification JWT — code mort
+
+Le fichier `api_app/routes/auth.py` décrit un endpoint `POST /api/v1/auth/token` (compte simulé `admin_tcf`, hash SHA-256), mais :
+
+- le routeur **n'est jamais monté** dans `main.py` (seuls `evaluation.router` et `oral_correction.router` le sont),
+- il importe `creer_access_token` et `verifier_mot_de_passe`, **inexistants** dans `security.py` : l'import lèverait un `ImportError`.
+
+Cet endpoint **n'existe pas** dans l'API déployée.
 
 ---
 
@@ -112,9 +123,9 @@ Le fichier `security.py` implémente deux mécanismes :
 
 ```python
 class TachePayload(BaseModel):
-    consigne_sujet: str           # La consigne de l'exercice
-    texte_candidat: str           # La production écrite du candidat
-    documents_contexte: list[str] # Uniquement pour la Tâche 3 (synthèse)
+    consigne_sujet: str            # La consigne de l'exercice
+    texte_candidat: str            # La production écrite du candidat
+    documents_contexte: list[str]  # Uniquement pour la Tâche 3 (synthèse)
 
 class TCFExamenRequest(BaseModel):
     tache_1: TachePayload | None
@@ -123,12 +134,12 @@ class TCFExamenRequest(BaseModel):
 ```
 
 **Injection de dépendances :**
-- `get_rag_service()` → instancie `RAGService` (connexion Qdrant)
-- `get_llm_service()` → instancie `LLMService` (connexion Mistral)
+- `get_rag_service()` → instancie `RAGService` (connexion Qdrant + client embeddings Mistral)
+- `get_llm_service()` → instancie `LLMService` (connexion Gemini — requiert `GEMINI_API_KEY`)
 - `verifier_cle_api` → valide la clé API
 
 **Gestion d'erreurs :**
-- Toute exception levée par `evaluer_session_complete()` est catchée et renvoyée en HTTP 500 avec le message d'erreur
+- Toute exception levée par `evaluer_session_complete()` est catchée et renvoyée en HTTP 500 avec le message d'erreur (y compris les erreurs de SDK tiers).
 
 ---
 
@@ -139,29 +150,35 @@ class TCFExamenRequest(BaseModel):
 ```python
 class LLMService:
     def __init__(self):
-        self.client = Mistral(api_key=os.environ.get("MISTRAL_API_KEY"))
-        self.modele = "mistral-large-latest"
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("LLM_API_KEY")
+        if not api_key:
+            raise ValueError("❌ GEMINI_API_KEY est introuvable dans les variables d'environnement.")
+        self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1"))
+        self.modele = os.environ.get("LLM_MODEL_NAME", "gemini-3.8-flash")
 ```
 
-Utilise le SDK officiel `mistralai` avec la clé API lue depuis l'environnement.
+Utilise le SDK officiel `google-genai`. Le nom du modèle est surchargeable via `LLM_MODEL_NAME`. **L'instanciation échoue sans clé Gemini** — y compris dans la suite de tests.
 
 ### 3.2 Orchestrateur : `evaluer_session_complete()`
 
 C'est le point d'entrée principal. Déroulement :
 
-1. **Lancement parallèle** des 3 tâches via `asyncio.gather()` :
+1. **Traitement séquentiel** des 3 tâches (l'ancien `asyncio.gather()` a été supprimé) :
    - Tâche 1 : `_analyser_une_tache(1, 4, payload.tache_1, rag)`
    - Tâche 2 : `_analyser_une_tache(2, 7, payload.tache_2, rag)`
    - Tâche 3 : `_analyser_une_tache(3, 9, payload.tache_3, rag)`
+   - Si `MAX_CONCURRENT_LLM_CALLS == 1`, un `asyncio.sleep(1.0)` est inséré entre chaque tâche (palier de rate-limit). Cette variable **ne parallélise rien** côté écrit.
 
 2. **Post-traitement par tâche** :
-   - Si la tâche a retourné un résultat (non-null) : recalcule le niveau CECRL/NCLC via `_calculer_niveaux_par_tache()` avec la note réelle, puis ajoute au score total
+   - Si la tâche a retourné un résultat (non-null) : recalcule le niveau CECRL/NCLC via `_calculer_niveaux_par_tache()` avec la note réelle, réécrit `consigne`, ajoute `nombre_mots_candidat` / `nombre_mots_exemple`, puis ajoute au score total
    - Si la tâche est nulle (non soumise ou vide) : génère un bloc vide via `_generer_tache_vide()` avec score 0
 
 3. **Calcul du bilan global** :
-   - Total sur 20 = somme des notes obtenues
+   - Total sur 20 = somme des notes obtenues (dénominateur **toujours 20**, même pour une seule tâche soumise)
    - Pourcentage = `(note_sur_20 / 20) × 100`
    - Niveau global = `_determiner_niveaux_tcf(note_sur_20)` → (CECRL, NCLC, mention)
+
+> Une exception sur une seule tâche (échec Gemini, JSON malformé…) interrompt toute la requête en HTTP 500, y compris les tâches déjà évaluées.
 
 ### 3.3 Analyse d'une tâche : `_analyser_une_tache()`
 
@@ -171,18 +188,23 @@ Pour chaque tâche non vide :
    - Extrait les règles méthodologiques (Top 3)
    - Extrait les exemples de copies similaires (Top 2, filtrés par tache_id)
 
-2. **Génération du prompt système** via `_generer_prompt_systeme()` :
+2. **Construction de la consigne** :
+   - Tâches 1 et 2 : `consigne_sujet` brut
+   - Tâche 3 : construction à partir de `consigne_sujet` + 2 premiers `documents_contexte` ; après appel, la `consigne` de la réponse est **réécrite** en `"TITRE : {titre}\n\n{doc1}\n\n{doc2}"` (sans libellé « Document 1/2 »)
+
+3. **Génération du prompt système** via `_generer_prompt_systeme()` :
    - Instructions spécifiques à la tâche (format, longueur, critères)
    - Règles méthodologiques issues de Qdrant
    - Exemples de copies de référence
    - Structure JSON attendue
 
-3. **Appel à Mistral** :
-   - Exécuté dans un thread séparé via `loop.run_in_executor()` pour ne pas bloquer la boucle asynchrone
-   - Format de réponse forcé en `json_object`
+4. **Appel à Gemini** :
+   - Exécuté dans un thread séparé via `asyncio.to_thread(_appeler_llm_json, …)` pour ne pas bloquer la boucle asynchrone
+   - Config : `response_mime_type="application/json"`, `temperature=0.0`
+   - Retry ×3 sur les erreurs `429` / `503` (backoff 2 s → 4 s → 8 s)
    - Parsing du JSON de réponse
 
-4. **Post-traitement** :
+5. **Post-traitement** :
    - Injection du nombre réel de mots et du texte original
    - Injection de la consigne
 
@@ -238,6 +260,18 @@ Pour une tâche non soumise, génère un bloc avec :
 - Erreurs : tableau vide
 - Coaching : pointe "Tâche non traitée."
 
+### 3.8 Module Expression Orale
+
+Méthodes dédiées dans le même service :
+
+| Méthode | Rôle |
+|---------|------|
+| `generer_corrections_orales_batch(topics, rag)` | Orchestrateur : sémaphore `MAX_CONCURRENT_LLM_CALLS` + `asyncio.gather` (parallèle, sans tolérance de panne partielle) |
+| `_traiter_un_sujet_oral(topic, rag)` | RAG oral → prompt → Gemini (`response_schema` Pydantic) → validation stricte de la sortie |
+| `_obtenir_config_prompt_oral(topic)` | Routage TASK_2 / TASK_3-DIALECTICAL / TASK_3-ANALYTICAL → (prompt, schéma) |
+
+Les prompts sont externalisés dans `api_app/prompts/oral_prompts.py`, les schémas dans `api_app/schemas/oral.py`. Contrairement à l'écrit, la sortie du LLM est **validée par Pydantic** avant d'être renvoyée.
+
 ---
 
 ## 4. RAGService (api_app/services/rag_service.py)
@@ -248,18 +282,18 @@ Pour une tâche non soumise, génère un bloc avec :
 class RAGService:
     def __init__(self):
         self.qdrant_client = QdrantClient(url=..., api_key=..., check_compatibility=False)
-        self.mistral_client = Mistral(api_key=...)
+        self.mistral_client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
         self.coll_copies = "tcf_copies_dataset"
         self.coll_methode = "tcf_methodologie"
 ```
 
 - Connexion à Qdrant Cloud (base vectorielle)
-- Connexion à Mistral AI (pour les embeddings)
+- Connexion à Mistral AI (**embeddings uniquement**, le chat est passé à Gemini)
 - Création automatique d'un index sur `tache_id` dans la collection `tcf_copies_dataset` pour le filtrage
 
 ### 4.2 Génération d'embedding : `_generer_embedding()`
 
-Utilise le modèle `mistral-embed` pour transformer un texte en vecteur :
+Utilise le modèle `mistral-embed` pour transformer un texte en vecteur (1024 dimensions) :
 
 ```python
 response = self.mistral_client.embeddings.create(
@@ -271,9 +305,9 @@ return response.data[0].embedding
 
 Retourne `None` silencieusement en cas d'erreur.
 
-### 4.3 Récupération de contexte : `recuperer_contexte()`
+### 4.3 Récupération de contexte : `recuperer_contexte()` (écrit)
 
-Pour une copie candidate donnée, récupère en parallèle deux types de contexte :
+Pour une copie candidate donnée, récupère deux types de contexte :
 
 **1. Règles méthodologiques (collection `tcf_methodologie`)**
 - Embedding du texte candidat → recherche de similarité vectorielle
@@ -291,11 +325,20 @@ Pour une copie candidate donnée, récupère en parallèle deux types de context
 {
     "regles": ["règle 1", "règle 2", "règle 3"],
     "exemples": [
-        {"texte_candidat": "...", "evaluation_expert": "..."},
-        {"texte_candidat": "...", "evaluation_expert": "..."}
+        {"texte_candidat": "...", "evaluation_expert": {...}},
+        {"texte_candidat": "...", "evaluation_expert": {...}}
     ]
 }
 ```
+
+### 4.4 Récupération de contexte oral : `recuperer_contexte_oral()`
+
+Pour un sujet d'Expression Orale :
+
+1. Construction d'une requête : `"Méthodologie TCF Canada Expression Orale {task_type}[ {task3_type}] : {content}"`
+2. Embedding `mistral-embed` de cette requête
+3. Recherche Top 4 dans `tcf_methodologie` — **sans filtre** (les chunks des PDF écrit et oral sont mélangés)
+4. Retour de la liste des chunks (`contenu_regle`), ou `[]` si embedding ou requête échoue (fallback silencieux, y compris exceptions Qdrant)
 
 ---
 
@@ -331,10 +374,11 @@ Mistral AI / Groq
 
 ### 5.3 Collections Qdrant
 
-**`tcf_methodologie`** : contient les règles issues du PDF `METHODOLOGIE_TCF_CANADA_TAYES.pdf` :
-- Règles de barème (grille de notation)
-- Consignes méthodologiques par tâche
-- Critères d'évaluation détaillés
+**`tcf_methodologie`** : contient les règles issues des PDF de `methodology_docs/` :
+- `METHODOLOGIE_expression_ecrite_TCF_CANADA.pdf` (Expression Écrite)
+- `TAMARO_Methodologie_Expression_Orale.pdf` (Expression Orale)
+
+Les chunks des deux documents sont **mélangés** dans la même collection (payload : `source_document`, `index_chunk`, `contenu_regle`). L'ingestion (`ingest_methodology.py`) est idempotente (IDs déterministes) et traite les embeddings par lots de 10 avec retry 429.
 
 **`tcf_copies_dataset`** : contient les copies évaluées avec :
 - `texte_candidat` : production écrite
@@ -345,7 +389,7 @@ Mistral AI / Groq
 
 ## 6. Structure complète des réponses
 
-### Réponse succès (200)
+### Réponse succès (200) — Expression Écrite
 
 ```json
 {
@@ -353,7 +397,7 @@ Mistral AI / Groq
   "meta": {
     "exam": "TCF Canada",
     "epreuve": "Expression écrite",
-    "date_evaluation": "2026-07-01T12:00:00Z",
+    "date_evaluation": "2026-10-18T12:00:00Z",
     "version_analyse": "1.0.0",
     "mode": "evaluation_complete"
   },
@@ -379,6 +423,8 @@ Mistral AI / Groq
         "texte_original": "string",
         "nombre_mots": 85
       },
+      "nombre_mots_candidat": 85,
+      "nombre_mots_exemple": 112,
       "score": {
         "obtenu": 3.0,
         "maximum": 4
@@ -391,8 +437,33 @@ Mistral AI / Groq
       "analyse": { ... },
       "statistiques": { ... },
       "erreurs": [ ... ],
-      "versions": { ... },
-      "coaching": { ... }
+      "versions": {
+        "version_corrigee": "...",
+        "version_modele_c2": "..."
+      },
+      "coaching": {
+        "points_forts": [],
+        "points_a_ameliorer": [],
+        "conseils": [],
+        "objective_prochaine_copie": ""
+      }
+    }
+  ]
+}
+```
+
+### Réponse succès (200) — Expression Orale
+
+```json
+{
+  "status": "success",
+  "total_processed": 1,
+  "corrections": [
+    {
+      "topic_id": "sujet-001",
+      "task_type": "TASK_2",
+      "task3_type": null,
+      "correction": { ... }  // Task2Correction | Task3Dialectical | Task3Analytical
     }
   ]
 }
@@ -423,7 +494,7 @@ Mistral AI / Groq
 **500 - Erreur interne :**
 ```json
 {
-  "detail": "Erreur lors de l'appel à Mistral AI: ..."
+  "detail": "Erreur lors de l'appel au LLM : ..."
 }
 ```
 
@@ -432,7 +503,7 @@ Mistral AI / Groq
 ## 7. Gestion des cas particuliers
 
 ### Tâche non soumise (`null`)
-- La tâche n'est pas envoyée à Mistral
+- La tâche n'est pas envoyée à Gemini
 - Score forcé à 0.0
 - Niveau A1 / "3 ou moins"
 - Pas d'analyse ni d'erreurs
@@ -440,19 +511,24 @@ Mistral AI / Groq
 ### Tâche avec texte vide
 - Traitée comme non soumise (même comportement que `null`)
 
-### Erreur Mistral (timeout, API down)
-- L'exception remonte jusqu'à la route
+### Erreur LLM (quota, API down, JSON malformé)
+- L'exception remonte jusqu'à la route (les tâches déjà traitées sont perdues)
 - Renvoyée en HTTP 500 avec le message d'erreur
 
 ### Erreur Qdrant (connexion, embedding)
 - `recuperer_contexte()` retourne `{"regles": [], "exemples": []}`
-- Le LLM évalue sans contexte RAG (fallback silencieux)
+- `recuperer_contexte_oral()` retourne `[]`
+- Le LLM évalue sans contexte RAG (fallback silencieux, invisible côté client)
+
+### Sujet oral `TASK_3` sans `task3_type`
+- `ValueError` levé dans `_obtenir_config_prompt_oral()` → HTTP 500 (et non 422)
 
 ---
 
 ## 8. Performances
 
-- Les 3 tâches sont évaluées **en parallèle** via `asyncio.gather()`
-- Chaque appel Mistral est exécuté dans un thread séparé (`run_in_executor`) pour ne pas bloquer
-- Temps de réponse typique : 10-30 secondes (dépend de Mistral API)
-- Le RAG ajoute ~500ms par tâche (embedding + 2 requêtes Qdrant)
+- Les 3 tâches écrites sont évaluées **séquentiellement** (régression : l'ancienne version utilisait `asyncio.gather`)
+- Chaque appel Gemini est exécuté dans un thread séparé (`asyncio.to_thread`) pour ne pas bloquer
+- Temps de réponse typique (écrit) : **somme de 3 appels Gemini** ≈ 9-30 secondes
+- Temps de réponse typique (oral) : `ceil(n / 3)` fenêtres de concurrence (`MAX_CONCURRENT_LLM_CALLS`, défaut 3)
+- Le RAG ajoute ~500ms par tâche (embedding Mistral + requêtes Qdrant), non déporté en thread

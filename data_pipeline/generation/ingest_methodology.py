@@ -1,4 +1,5 @@
 import os
+import time
 import hashlib
 import uuid
 from pathlib import Path
@@ -36,7 +37,6 @@ def initialiser_collection():
         print(f"[+] Collection '{NOM_COLLECTION_METHODOLOGIE}' créée.")
 
 def extraire_texte_pdf(chemin_pdf):
-    """Lit un fichier PDF et extrait le texte de chaque page."""
     texte_complet = ""
     try:
         reader = PdfReader(chemin_pdf)
@@ -49,7 +49,6 @@ def extraire_texte_pdf(chemin_pdf):
     return texte_complet
 
 def decouper_texte(texte, taille_chunk=800, chevauchement=150):
-    """Découpe le texte en blocs sémantiques qui se chevauchent légèrement."""
     chunks = []
     start = 0
     while start < len(texte):
@@ -58,74 +57,91 @@ def decouper_texte(texte, taille_chunk=800, chevauchement=150):
         start += taille_chunk - chevauchement
     return chunks
 
-def generer_embedding(texte):
-    try:
-        response = mistral_client.embeddings.create(
-            model="mistral-embed",
-            inputs=[texte]
-        )
-        return response.data[0].embedding
-    except Exception as e:
-        print(f"[-] Erreur embedding : {e}")
-        return None
+def generer_embeddings_batch(liste_textes, max_retries=3):
+    """Génère les embeddings par batch avec retry en cas de rate-limit (429)."""
+    for attempt in range(max_retries):
+        try:
+            response = mistral_client.embeddings.create(
+                model="mistral-embed",
+                inputs=liste_textes
+            )
+            return [item.embedding for item in response.data]
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                print(f" [⚠️ Rate Limit] Pause de 5 secondes avant réessai ({attempt + 1}/{max_retries})...")
+                time.sleep(5)
+            else:
+                print(f"[-] Erreur embedding batch : {e}")
+                return None
 
 def ingerer_documents_methodologie():
     dossier_docs = chemin_racine / "data_pipeline" / "methodology_docs"
     if not dossier_docs.exists():
-        print(f"[-] Dossier introuvable. Crée-le ici : {dossier_docs}")
+        print(f"[-] Dossier introuvable : {dossier_docs}")
         return
 
     initialiser_collection()
-    points_a_uploader = []
-
-    # On cherche les fichiers .pdf (et on garde les .txt au cas où)
+    
     fichiers_a_traiter = list(dossier_docs.glob("*.pdf")) + list(dossier_docs.glob("*.txt"))
-
     if not fichiers_a_traiter:
         print(f"[-] Aucun fichier PDF ou TXT trouvé dans {dossier_docs.name}.")
         return
 
     print(f"[*] Analyse et découpage de {len(fichiers_a_traiter)} document(s) méthodologique(s)...")
     
+    tous_les_morceaux = []
+    
     for fichier in fichiers_a_traiter:
         print(f"    -> Lecture de : {fichier.name}")
-        
-        if fichier.suffix.lower() == ".pdf":
-            contenu = extraire_texte_pdf(fichier)
-        else:
-            with open(fichier, "r", encoding="utf-8") as f:
-                contenu = f.read()
+        contenu = extraire_texte_pdf(fichier) if fichier.suffix.lower() == ".pdf" else fichier.read_text(encoding="utf-8")
         
         if not contenu.strip():
-            print(f"    [⚠️] Texte vide extrait de {fichier.name}. Passage au suivant.")
             continue
 
         morceaux = decouper_texte(contenu)
-        print(f"    [+] {len(morceaux)} morceaux générés pour ce document.")
+        print(f"    [+] {len(morceaux)} morceaux générés pour {fichier.name}.")
         
-        for i, morceau in enumerate(morceaux):
-            # Agrégation & Idempotence : ID unique et stable basé sur le contenu du morceau
-            hash_chunk = hashlib.md5(morceau.encode('utf-8')).hexdigest()
+        for i, m in enumerate(morceaux):
+            tous_les_morceaux.append({
+                "source": fichier.name,
+                "index": i,
+                "texte": m
+            })
+
+    # Traitement par paquets de 10 morceaux pour respecter le Rate Limit Mistral
+    BATCH_SIZE = 10
+    points_a_uploader = []
+    total_morceaux = len(tous_les_morceaux)
+    
+    print(f"[*] Traitement par lots de {BATCH_SIZE} morceaux...")
+    
+    for i in range(0, total_morceaux, BATCH_SIZE):
+        batch = tous_les_morceaux[i:i + BATCH_SIZE]
+        textes_batch = [item["texte"] for item in batch]
+        
+        embeddings = generer_embeddings_batch(textes_batch)
+        if not embeddings:
+            print(f"[-] Échec du lot {i} à {i+BATCH_SIZE}, passage au suivant.")
+            continue
+
+        for item, vecteur in zip(batch, embeddings):
+            hash_chunk = hashlib.md5(item["texte"].encode('utf-8')).hexdigest()
             point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, hash_chunk))
             
-            vecteur = generer_embedding(morceau)
-            if TYPE_CHECK := (vecteur is None):
-                continue
-                
             payload = {
-                "source_document": fichier.name,
-                "index_chunk": i,
-                "contenu_regle": morceau
+                "source_document": item["source"],
+                "index_chunk": item["index"],
+                "contenu_regle": item["texte"]
             }
-            
             points_a_uploader.append(PointStruct(id=point_id, vector=vecteur, payload=payload))
+            
+        # Pause de 1 seconde entre chaque batch pour éviter le 429
+        time.sleep(1)
 
     if points_a_uploader:
-        print(f"[*] Upload de {len(points_a_uploader)} blocs de règles dans Qdrant Cloud...")
+        print(f"[*] Upload de {len(points_a_uploader)}/ {total_morceaux} blocs de règles dans Qdrant Cloud...")
         qdrant_client.upsert(collection_name=NOM_COLLECTION_METHODOLOGIE, wait=True, points=points_a_uploader)
-        print(f"\n[🎉 SUCCÈS] Ta méthodologie PDF est indexée avec succès dans '{NOM_COLLECTION_METHODOLOGIE}' !")
-    else:
-        print("[-] Aucun point valide n'a pu être généré.")
+        print(f"\n[🎉 SUCCÈS] Indexation complète terminée avec succès dans '{NOM_COLLECTION_METHODOLOGIE}' !")
 
 if __name__ == "__main__":
     ingerer_documents_methodologie()
